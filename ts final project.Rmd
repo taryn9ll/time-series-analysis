@@ -1,0 +1,288 @@
+---
+title: "PSTAT 274 Final Project"
+author: "Taryn Li"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval = FALSE}
+# install.packages("devtools", repos = "http://cran.us.r-project.org")
+# devtools::install_github("FinYang/tsdl")
+# install.packages("tidyverse")
+# install.packages("dplyr")
+# install.packages("lubridate")
+# install.packages("ggplot2")
+# install.packages("ggfortify")
+# install.packages("qpcR")
+# install.packages("UnitCircle")
+# install.packages("TSA")
+# install.packages("GeneCycle")
+library(tsdl)
+library(tidyverse)
+library(dplyr)
+library(MASS)
+library(lubridate)
+library(forecast)
+library(ggplot2)
+library(ggfortify)
+library(qpcR)
+library(UnitCircle)
+library(GeneCycle)
+```
+
+```{r, eval = FALSE}
+# Load and filter raw dataset
+cpi <- read.csv("~/Desktop/PSTAT 274/Final Project/data/CPIAUCSL.csv", sep=",")
+cpi.csv <- cpi[as.Date(cpi$DATE) >= as.Date("2009-05-01") 
+                    & as.Date(cpi$DATE) <= as.Date("2023-04-01"), ]
+head(cpi.csv)
+
+write.csv(cpi.csv, file = "~/Desktop/PSTAT 274/Final Project/data/cpi.csv", 
+          row.names = FALSE)
+
+nrow(cpi.csv)  # number of observations in the original time series
+cpi.ts <- ts(cpi.csv[,2], start = c(2009,1), frequency = 12)
+
+# Split the original data
+cpi_train <- cpi.ts[c(1: 156)]
+cpi_test <- cpi.ts[c(157: 168)]
+
+# Time series plot of training set
+ts.plot(cpi_train, main = "Training Time Series")
+fit <- lm(cpi_train ~ as.numeric(1:length(cpi_train)))
+abline(fit, col = "red")
+
+# Decomposition plot of training time series
+y <- ts(as.ts(cpi_train), frequency = 12)
+decomp <- decompose(y)
+plot(decomp)
+
+hist(cpi.ts, main = "Histogram of Training Time Series")
+acf(cpi_train, lag.max = 80, main = "ACF of Training Time Series" )
+
+# Box-Cox transformation
+t <- 1:length(cpi_train)
+fit <- lm(cpi_train ~ t)
+bcTransform = boxcox(cpi_train ~ t, plotit = TRUE)
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))] 
+lambda
+cpi.bc = (1/lambda)*(cpi_train^lambda-1)
+
+# compare variance
+var(cpi_train)
+var(cpi.bc)
+
+# Plot the original data vs Box-Cox transformed data vs Log transformed data
+op <- par(mfrow = c(2,2))
+ts.plot(cpi_train, main = "Original Training Data", ylab = expression(X[t]))
+ts.plot(cpi.bc, main = "Box-Cox Tranformed Training Data", 
+        ylab = expression(Y[t]))
+hist(cpi_train, main = "Histogram of Original(training)", col = "purple")
+hist(cpi.bc, main = "Histogram of Box-Cox(training)", col = "darkgreen")
+par(op)
+
+# Differencing (remove trend)
+var(cpi.bc)
+# Since there is a trend, I use difference at lag 1
+cpi_train1 <- diff(cpi.bc, lag = 1)  # first difference
+var(cpi_train1) 
+
+cpi_train2 <- diff(cpi_train1, lag = 1)  # second difference
+var(cpi_train2)  # sample variance increases, strop differencing at lag 1
+
+ts.plot(cpi_train1, main = "De-trended & Transformed Training Time Series", 
+        ylab = expression(nabla~Y[t]))
+abline(h = mean(cpi_train1), lty = 2)
+
+# Histogram with normal curve of de-trended training
+hist(cpi_train1, density = 20, breaks = 20, col = "lightblue", prob = TRUE, 
+     main = "Histogram of De-trended & Transformed Training Time Series")
+m <- mean(cpi_train1)
+std <- sqrt(var(cpi_train1))
+curve(dnorm(x, m, std), add = TRUE)
+
+# Model Identification
+# ACF and PACF
+op <- par(mfrow=c(1,2))
+acf(cpi_train1, lag.max = 20, main = expression(nabla~Y[t]))
+pacf(cpi_train1, lag.max = 20, main = expression(nabla~Y[t]))
+par(op)
+
+# Model Estimation
+aiccs = matrix(NA, nr = 42, nc = 3) 
+colnames(aiccs) = c("p", "q", "AICc") 
+i = 0
+for(p in 0:5){
+  for(q in 0:6){
+    aiccs[i+1, 1] = p
+    aiccs[i+1, 2] = q
+    aiccs[i+1, 3] = AICc(arima(cpi_train1, order = c(p,0,q), method = "ML")) 
+    i = i+1
+    } 
+}
+# 6 models with the lowest AICcs
+aiccs[order(aiccs[,3])[1:12],]
+
+length(cpi_train)  # n = 156
+sqrt(length(cpi_train))
+
+# Model Diagnostics
+# ARIMA(5,1,4)
+# ar1 = 0
+(fit1 <- arima(cpi_train1, order = c(5,1,4), method = "ML"))
+(fit1_n <- arima(cpi_train1, order = c(5,1,4), fixed = c(0,0,NA,NA,NA,NA,NA,NA,NA), 
+                 method = "ML")) 
+AICc(fit1_n)
+
+Box.test(residuals(fit1_n), lag = 12, type ="Box-Pierce", fitdf = 10) 
+Box.test(residuals(fit1_n), lag = 12, type = "Ljung-Box", fitdf = 10) 
+Box.test((residuals(fit1_n))^2, lag = 12, type = "Ljung-Box", fitdf = 0)  
+# McLeod-Li test: Ljung-Box for squares
+shapiro.test(residuals(fit1_n))
+
+# ARIMA(5,1,5)
+(fit2 <- arima(cpi_train1, order = c(5,1,5), method = "ML"))
+(fit2_n <- arima(cpi_train1, order = c(5,1,5), 
+                 fixed = c(NA,NA,0,NA,NA,NA,NA,NA,NA,NA), method = "ML")) 
+AICc(fit2_n)
+
+Box.test(residuals(fit2_n), lag = 12, type ="Box-Pierce", fitdf = 11)
+# p-value < 0.05, so it fails to pass Box-Pierce test.
+Box.test(residuals(fit2_n), lag = 12, type = "Ljung-Box", fitdf = 11) 
+# p-value < 0.05, so it fails to pass Ljung-Box test.
+Box.test((residuals(fit2_n))^2, lag = 12, type = "Ljung-Box", fitdf = 0)  
+# McLeod-Li test: Ljung-Box for squares
+shapiro.test(residuals(fit2_n))
+
+# ARIMA(2,1,4)
+(fit3 <- arima(cpi_train1, order = c(2,1,4), method = "ML"))
+(fit3_n <- arima(cpi_train1, order = c(2,1,4), fixed = c(NA,NA,0,0,NA,0), 
+                 method = "ML")) 
+AICc(fit3_n)
+
+Box.test(residuals(fit3_n), lag = 12, type ="Box-Pierce", fitdf = 7) 
+Box.test(residuals(fit3_n), lag = 12, type = "Ljung-Box", fitdf = 7) 
+Box.test((residuals(fit3_n))^2, lag = 12, type = "Ljung-Box", fitdf = 0)  
+shapiro.test(residuals(fit3_n))
+
+# ARIMA(2,1,3)
+# ar1 = 0
+(fit4 <- arima(cpi_train1, order = c(2,1,3), method = "ML"))
+(fit4_n <- arima(cpi_train1, order = c(2,1,3), fixed = c(0,NA,NA,NA,NA), 
+                 method = "ML")) 
+AICc(fit4_n)
+
+Box.test(residuals(fit4_n), lag = 12, type ="Box-Pierce", fitdf = 6) 
+Box.test(residuals(fit4_n), lag = 12, type = "Ljung-Box", fitdf = 6) 
+Box.test((residuals(fit4_n))^2, lag = 12, type = "Ljung-Box", fitdf = 0)  
+shapiro.test(residuals(fit4_n))
+
+# ARIMA(5,1,6)
+(fit5 <- arima(cpi_train1, order = c(5,1,6), method = "ML"))
+(fit5_n <- arima(cpi_train1, order = c(5,1,6), 
+                 fixed = c(0,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA), method = "ML")) 
+AICc(fit5_n)
+
+Box.test(residuals(fit5_n), lag = 12, type ="Box-Pierce", fitdf = 12) 
+# p-value < 0.05, so it fails to pass Box-Pierce test.
+Box.test(residuals(fit5_n), lag = 12, type = "Ljung-Box", fitdf = 12) 
+# p-value < 0.05, so it fails to pass Ljung-Box test.
+Box.test((residuals(fit5_n))^2, lag = 12, type = "Ljung-Box", fitdf = 0)  
+shapiro.test(residuals(fit5_n))
+
+# ARIMA(3,1,4)
+(fit6 <- arima(cpi_train1, order = c(3,1,4), method = "ML"))
+(fit6_n <- arima(cpi_train1, order = c(3,1,4), fixed = c(NA,NA,0,NA,0,NA,NA), 
+                 method = "ML")) 
+AICc(fit6)
+
+Box.test(residuals(fit6), lag = 12, type ="Box-Pierce", fitdf = 8) 
+Box.test(residuals(fit6), lag = 12, type = "Ljung-Box", fitdf = 8) 
+Box.test((residuals(fit6))^2, lag = 12, type = "Ljung-Box", fitdf = 0)  
+shapiro.test(residuals(fit6))
+
+# Check Stationarity and Invertibility
+# Roots checking
+uc.check(pol_ = c(1,0,0,-0.6130,0), plot_output = TRUE)  # MA part
+uc.check(pol_ = c(1,-0.4954,-0.0916,0.4130), plot_output = TRUE)  # AR part
+
+# Residual Analysis
+res3 = residuals(fit3_n)
+ts.plot(res3, main = "Fitted Residuals for fixed ARIMA (2,1,4)") 
+t = 1:length(res3)
+fit.res3 = lm(res3~t)
+abline(fit.res3)
+abline(h = mean(res3), col = "red")
+
+par(mfrow=c(1,2), oma=c(0,0,2,0)) 
+op <- par(mfrow=c(2,2))
+acf(res3, main = "Autocorrelation")
+pacf(res3, main = "Partial Autocorrelation") 
+hist(res3, main = "Histogram") 
+qqnorm(res3) 
+qqline(res3, col ="blue")
+title("Fitted Residuals Diagnostics for fixed ARIMA (2,1,4)", outer = TRUE)
+par(op)
+
+# Roots checking
+uc.check(pol_ = c(1,-0.5257,0,-0.6262,-0.0668), plot_output = TRUE)  # MA part
+uc.check(pol_ = c(1,-0.8756,0.2637,-0.3881), plot_output = TRUE)  # AR part
+
+# Spectral Analysis
+require(TSA)
+periodogram(res3)
+abline(h = 0)
+# Fisher’s test
+fisher.g.test(res3)
+# Kolmogorov Smirnov Test
+cpgram(res3, main = "")
+
+# Forecasting
+# Predict 12 future observations with transformed time series Y and the plot
+# candidate model: new ARIMA(2,1,4)
+fit3_n = arima(cpi.bc, order = c(2,1,4), fixed = c(NA,NA,0,0,NA,0), method = "ML")
+pred.tr <- predict(fit3_n, n.ahead = 12)
+U.tr = pred.tr$pred + 1.96*pred.tr$se  
+# upper bound for the prediction interval for transformed data
+L.tr = pred.tr$pred - 1.96*pred.tr$se  # lower bound
+ts.plot(cpi.bc, xlim=c(1,length(cpi_train)+12), ylim = c(min(cpi.bc),max(U.tr)), 
+        main="Prediction on Transformed Training Time Series")
+lines(U.tr, col = "blue", lty = "dashed")
+lines(L.tr, col = "blue", lty = "dashed")
+points((length(cpi_train)+1):(length(cpi_train)+12), pred.tr$pred, col = "red")
+
+# Get predictions and s.e.'s of original time series X
+pred.orig <- (-2*pred.tr$pred+1)^(-1/2)
+# back-transform to get predictions of original time series 
+# bounds of the prediction interval
+U = (-2*U.tr+1)^(-1/2)
+L = (-2*L.tr+1)^(-1/2)
+
+# Predict 12 future observations with original training data
+ts.plot(cpi_train, xlim=c(1,length(y)+12), ylim = c(min(cpi_train),max(U)), 
+        main="Prediction on Original Training Time Series") 
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed") 
+points((length(cpi_train)+1):(length(cpi_train)+12), pred.orig, col="red") 
+# points((length(cpi_train)+1):(length(cpi_train)+12), cpi_test, col = "green")
+
+
+# Plot the last 12 values plus forecast
+ts.plot(cpi_train, xlim=c(length(cpi_train)-12,length(cpi_train)+12), 
+        ylim = c(min(cpi_train),max(U)), 
+        main="Zoom Graph of Prediction on Original Training Time Series") 
+points((length(cpi_train)+1):(length(cpi_train)+12), pred.orig, col="red")
+points((length(cpi_train)+1):(length(cpi_train)+12), cpi_test, col = "green")
+lines((length(cpi_train)+1):(length(cpi_train)+12), U, lty=2, col="blue")
+lines((length(cpi_train)+1):(length(cpi_train)+12), L, lty=2, col="blue")
+```
+
+
